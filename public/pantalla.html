@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Karaoke – Pantalla</title>
+<link rel="stylesheet" href="/static/estilos.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+</head>
+<body class="pantalla">
+
+<div id="inicio" class="overlay">
+  <div class="marca"><span class="live"><span class="punto-live"></span>LIVE</span><img src="/static/logo.jpg" alt="DILF – Rock en tu idioma"></div>
+  <h1>🎤 Pantalla de karaoke</h1>
+  <p class="sub">¿Esta pantalla reproduce la música?</p>
+  <div class="botones">
+    <button id="conAudio">🔊 Con audio</button>
+    <button id="soloLetra" class="sec">🖥️ Solo letra</button>
+  </div>
+  <p class="sub">Elige “Con audio” solo en la pantalla conectada a las bocinas; las demás muestran la letra sincronizada.<br>Doble clic o tecla <b>F</b> = pantalla completa.</p>
+</div>
+
+<header id="marcaFija" class="marca-fija oculto"><div class="marca chica"><span class="live"><span class="punto-live"></span>LIVE</span><img src="/static/logo.jpg" alt="DILF – Rock en tu idioma"></div></header>
+
+<div id="vEspera" class="vista">
+  <div class="espera-grid">
+    <div>
+      <div class="marca grande"><span class="live"><span class="punto-live"></span>LIVE</span><img src="/static/logo.jpg" alt="DILF – Rock en tu idioma"></div>
+      <p class="lema">Escanea el código, elige tu canción y escribe tu nombre</p>
+    </div>
+    <div class="qrbox"><div id="qr"></div></div>
+  </div>
+</div>
+
+<div id="vCuenta" class="vista cuenta oculto">
+  <p class="etq">Turno de</p>
+  <h1 id="cNombre"></h1>
+  <p id="cCancion"></p>
+  <div id="cNum" class="numero">10</div>
+</div>
+
+<div id="vLetra" class="vista vletra oculto">
+  <div class="cabecera"><span>🎤 <b id="lNombre"></b></span><span id="lCancion"></span></div>
+  <div id="creditos" class="creditos"><div id="rollo" class="rollo"></div></div>
+  <div class="barra"><div id="barra"></div></div>
+</div>
+
+<div id="vFin" class="vista fin oculto">
+  <h1>👏 ¡Aplausos!</h1>
+  <p id="fNombre"></p>
+</div>
+
+<div id="red" class="estado-red"></div>
+<audio id="audio" preload="auto"></audio>
+
+<script src="/static/comun.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const { h } = K;
+const audio = $('audio');
+const vistas = ['vEspera', 'vCuenta', 'vLetra', 'vFin'];
+
+let modoAudio = false;
+let estado = null, actual = null, letra = null, urlQr = '';
+let vistaActual = '', reproduciendo = false, ultimaCorreccion = 0, durReportada = false;
+const letras = {};
+
+// ------------------------------------------------------------ inicio / pantalla completa
+function pantallaCompleta() {
+  const d = document;
+  if (d.fullscreenElement) d.exitFullscreen();
+  else d.documentElement.requestFullscreen?.().catch(() => {});
+}
+function iniciar(conAudio) {
+  modoAudio = conAudio;
+  $('inicio').classList.add('oculto');
+  pantallaCompleta();
+  navigator.wakeLock?.request('screen').catch(() => {});
+  prepararAudio();
+}
+$('conAudio').onclick = () => iniciar(true);
+$('soloLetra').onclick = () => iniciar(false);
+document.addEventListener('dblclick', pantallaCompleta);
+document.addEventListener('keydown', (e) => { if (e.key === 'f' || e.key === 'F') pantallaCompleta(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') navigator.wakeLock?.request('screen').catch(() => {});
+});
+
+let cursorTimer;
+document.addEventListener('mousemove', () => {
+  document.body.classList.remove('sincursor');
+  clearTimeout(cursorTimer);
+  cursorTimer = setTimeout(() => document.body.classList.add('sincursor'), 2500);
+});
+
+// ------------------------------------------------------------ estado
+function obtenerLetra(id) {
+  if (!letras[id]) {
+    letras[id] = fetch('/api/letra?id=' + encodeURIComponent(id)).then((r) => r.json()).then((L) => {
+      L.lineas = L.lineas || [];
+      const conTexto = L.lineas.filter((l) => l.texto);
+      L.finLetra = conTexto.length ? conTexto[conTexto.length - 1].t + 5 : 5;
+      return L;
+    }).catch(() => { delete letras[id]; return null; });
+  }
+  return letras[id];
+}
+
+function alEstado(s) {
+  estado = s;
+  pintarEspera();
+  const a = s.actual;
+  if (!a) {
+    if (actual) detenerAudio();
+    actual = null; letra = null;
+    return;
+  }
+  const nuevo = !actual || actual.entrada_id !== a.entrada_id || actual.inicio !== a.inicio;
+  actual = a;
+  if (nuevo) {
+    letra = null; rolloDe = null; durReportada = false;
+    detenerAudio();
+    obtenerLetra(a.cancion_id).then((L) => {
+      if (actual === a || (actual && actual.entrada_id === a.entrada_id)) { letra = L; prepararAudio(); }
+    });
+  }
+}
+
+function pintarEspera() {
+  if (estado.url !== urlQr) {
+    urlQr = estado.url;
+    K.qr($('qr'), urlQr, 512);
+  }
+}
+
+// ------------------------------------------------------------ audio
+function prepararAudio() {
+  if (!modoAudio || !letra || !letra.audio) return;
+  if (audio.getAttribute('src') !== letra.audio) {
+    audio.src = letra.audio;
+    audio.load();
+  }
+}
+function detenerAudio() {
+  reproduciendo = false;
+  audio.pause();
+  audio.removeAttribute('src');
+  audio.load();
+}
+audio.addEventListener('loadedmetadata', () => {
+  if (actual && !durReportada && isFinite(audio.duration)) {
+    durReportada = true;
+    K.api('/api/duracion', { entrada_id: actual.entrada_id, duracion: audio.duration }).catch(() => {});
+  }
+});
+
+function sincronizarAudio(t) {
+  if (!modoAudio || !letra || !letra.audio || audio.ended) return;
+  if (isFinite(audio.duration) && t >= audio.duration) return;
+  if (!reproduciendo) {
+    reproduciendo = true;
+    try { audio.currentTime = t; } catch {}
+    audio.play().catch(() => { reproduciendo = false; });
+    return;
+  }
+  const ahora = performance.now();
+  if (ahora - ultimaCorreccion > 1000 && !audio.seeking) {
+    ultimaCorreccion = ahora;
+    if (Math.abs(audio.currentTime - t) > 0.3) audio.currentTime = t;
+  }
+}
+
+// ------------------------------------------------------------ dibujo
+function mostrar(id) {
+  if (vistaActual === id) return;
+  vistaActual = id;
+  for (const v of vistas) $(v).classList.toggle('oculto', v !== id);
+  $('marcaFija').classList.toggle('oculto', id === 'vEspera');
+}
+
+function indiceLinea(L, t) {
+  let lo = 0, hi = L.length - 1, r = -1;
+  while (lo <= hi) {
+    const m = (lo + hi) >> 1;
+    if (L[m].t <= t) { r = m; lo = m + 1; } else hi = m - 1;
+  }
+  return r;
+}
+// ------------------------------------------------------------ rollo tipo créditos
+// Todas las líneas van en una columna que sube de forma continua; cada línea
+// cruza el centro de la pantalla justo en el momento en que se canta.
+let rolloDe = null, centros = [], velocidad = 60, medido = false;
+
+function armarRollo() {
+  rolloDe = letra;
+  $('rollo').replaceChildren(...letra.lineas.map((l) =>
+    h('p', { class: l.texto ? 'credito' : 'credito vacia' }, l.texto)));
+  medido = false;
+}
+
+function medirRollo() {
+  medido = true;
+  centros = [...$('rollo').children].map((el) => el.offsetTop + el.offsetHeight / 2);
+  const L = rolloDe.lineas, n = L.length;
+  // Velocidad promedio, para que el rollo siga subiendo después de la última línea.
+  velocidad = n > 1 && L[n - 1].t > L[0].t ? (centros[n - 1] - centros[0]) / (L[n - 1].t - L[0].t) : 60;
+}
+window.addEventListener('resize', () => { medido = false; });
+
+function desplazamiento(t) {
+  const L = letra.lineas;
+  if (!L.length) return 0;
+  const H = $('creditos').clientHeight, ancla = H / 2;
+  if (t < L[0].t) {
+    // Antes de la primera línea el rollo entra desde abajo de la pantalla.
+    const desde = centros[0] - H - 40, hasta = centros[0] - ancla;
+    return desde + (hasta - desde) * (t / L[0].t);
+  }
+  const i = indiceLinea(L, t);
+  if (i >= L.length - 1) return centros[i] - ancla + (t - L[i].t) * velocidad;
+  const f = (t - L[i].t) / ((L[i + 1].t - L[i].t) || 1);
+  return centros[i] + (centros[i + 1] - centros[i]) * f - ancla;
+}
+
+function cuadro() {
+  requestAnimationFrame(cuadro);
+  $('red').textContent = '';
+  if (!actual) { mostrar('vEspera'); return; }
+
+  const t = (K.ahora() - actual.inicio) / 1000;
+  if (t < 0) {
+    mostrar('vCuenta');
+    $('cNombre').textContent = actual.nombre;
+    $('cCancion').textContent = actual.titulo + (actual.artista ? ' — ' + actual.artista : '');
+    const n = String(Math.ceil(-t));
+    if ($('cNum').textContent !== n) {
+      $('cNum').textContent = n;
+      $('cNum').style.animation = 'none'; void $('cNum').offsetWidth; $('cNum').style.animation = '';
+    }
+    return;
+  }
+
+  mostrar('vLetra');
+  if (!letra) return;
+  sincronizarAudio(t);
+
+  const musicaSonando = modoAudio && letra.audio && !audio.ended && reproduciendo;
+  if (t > letra.finLetra && !musicaSonando) {
+    mostrar('vFin');
+    $('fNombre').textContent = actual.nombre;
+    return;
+  }
+
+  $('lNombre').textContent = actual.nombre;
+  $('lCancion').textContent = actual.titulo + (actual.artista ? ' — ' + actual.artista : '');
+  const total = (actual.fin - actual.inicio) / 1000;
+  $('barra').style.width = Math.min(100, (t / total) * 100) + '%';
+
+  if (rolloDe !== letra) armarRollo();
+  if (!medido) medirRollo();
+  $('rollo').style.transform = `translate3d(0, ${-desplazamiento(t).toFixed(1)}px, 0)`;
+}
+
+const es = K.escuchar(alEstado);
+es.onerror = () => { $('red').textContent = 'Reconectando…'; };
+requestAnimationFrame(cuadro);
+</script>
+</body>
+</html>

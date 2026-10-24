@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0d0b1e">
+<title>Karaoke – Elige tu canción</title>
+<link rel="stylesheet" href="/static/estilos.css">
+</head>
+<body class="movil">
+  <header class="top">
+    <div class="marca"><span class="live"><span class="punto-live"></span>LIVE</span><img src="/static/logo.jpg" alt="DILF – Rock en tu idioma"></div>
+    <h1>🎤 ¡Si te la sabes cántala!</h1>
+    <p>Elige tu canción y anótate en la lista</p>
+  </header>
+
+  <section id="misTurnos"></section>
+  <div id="ahora" class="tarjeta ahora-mini oculto"><span class="punto"></span><span id="ahoraTxt"></span></div>
+
+  <div class="buscador"><input id="buscar" type="search" placeholder="Buscar canción o artista…" autocomplete="off"></div>
+  <ul id="lista" class="canciones"><li class="vacio">Cargando canciones…</li></ul>
+
+  <dialog id="dlg">
+    <form id="frm">
+      <p class="etq">Vas a cantar</p>
+      <h2 id="dlgTitulo"></h2>
+      <p id="dlgArtista" class="sub"></p>
+      <label>Tu nombre o nickname
+        <input id="nombre" maxlength="30" required autocomplete="nickname" enterkeyhint="done">
+      </label>
+      <p id="dlgError" class="error"></p>
+      <div class="botones">
+        <button type="button" id="cancelar" class="sec">Cancelar</button>
+        <button type="submit" id="anotar">Anotarme</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast oculto" role="status"></div>
+
+<script src="/static/comun.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const { h } = K;
+let canciones = [], estado = null, elegida = null;
+const norm = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+
+async function cargarCanciones() {
+  try {
+    canciones = await (await fetch('/api/canciones')).json();
+  } catch {
+    $('lista').replaceChildren(h('li', { class: 'vacio' }, 'No se pudo cargar la lista. Recarga la página.'));
+    return;
+  }
+  pintarLista();
+}
+
+function pintarLista() {
+  const q = norm($('buscar').value.trim());
+  const filtradas = canciones.filter((c) => norm(c.titulo + ' ' + c.artista).includes(q));
+  if (!filtradas.length) {
+    $('lista').replaceChildren(h('li', { class: 'vacio' }, canciones.length ? 'No encontramos esa canción.' : 'Aún no hay canciones cargadas.'));
+    return;
+  }
+  $('lista').replaceChildren(...filtradas.map((c) =>
+    h('li', {}, h('button', { class: 'cancion', onclick: () => abrir(c) },
+      h('span', { class: 'info' }, h('span', { class: 't' }, c.titulo), c.artista ? h('span', { class: 'a' }, c.artista) : null),
+      h('span', { class: 'mas', 'aria-hidden': 'true' }, '＋')))));
+}
+
+function abrir(c) {
+  elegida = c;
+  $('dlgTitulo').textContent = c.titulo;
+  $('dlgArtista').textContent = c.artista || '';
+  $('nombre').value = K.leer('karaoke_nombre', '');
+  $('dlgError').textContent = '';
+  $('dlg').showModal();
+  $('nombre').focus();
+}
+
+$('cancelar').onclick = () => $('dlg').close();
+$('buscar').oninput = pintarLista;
+
+$('frm').onsubmit = async (e) => {
+  e.preventDefault();
+  const nombre = $('nombre').value.trim();
+  if (!nombre) { $('dlgError').textContent = 'Escribe tu nombre o nickname'; return; }
+  $('anotar').disabled = true;
+  try {
+    const r = await K.api('/api/cola', { cancion_id: elegida.id, nombre });
+    K.escribir('karaoke_nombre', nombre);
+    K.escribir('karaoke_mis', [...K.leer('karaoke_mis', []), r.entrada.id].slice(-20));
+    $('dlg').close();
+    if (estado) pintarEstado();
+    toast(`¡Listo, ${r.entrada.nombre}! Eres el turno #${r.posicion}`);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  } catch (err) {
+    $('dlgError').textContent = err.message;
+  } finally {
+    $('anotar').disabled = false;
+  }
+};
+
+let toastTimer;
+function toast(msg) {
+  $('toast').textContent = msg;
+  $('toast').classList.remove('oculto');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => $('toast').classList.add('oculto'), 5000);
+}
+
+function pintarEstado() {
+  const mis = K.leer('karaoke_mis', []);
+  const pendientes = estado.cola.filter((e) => e.estado === 'pendiente');
+  const tarjetas = [];
+  for (const e of estado.cola) {
+    if (!mis.includes(e.id)) continue;
+    if (e.estado === 'cantando') {
+      tarjetas.push(h('div', { class: 'tarjeta miturno ya' },
+        h('span', { class: 'etq', style: 'color:#fff' }, '¡Es tu turno!'),
+        h('span', { class: 'grande' }, `🎤 ${e.nombre}, pasa al escenario`),
+        h('span', {}, e.titulo)));
+    } else if (e.estado === 'pendiente') {
+      const pos = pendientes.indexOf(e) + 1;
+      tarjetas.push(h('div', { class: 'tarjeta miturno' },
+        h('span', { class: 'etq' }, `Turno de ${e.nombre}`),
+        h('span', { class: 'grande' }, pos === 1 ? '¡Sigues tú!' : `Lugar #${pos}`),
+        h('span', { class: 'sub' }, e.titulo + (pos > 1 ? ` · faltan ${pos - 1} antes que tú` : ''))));
+    }
+  }
+  $('misTurnos').replaceChildren(...tarjetas);
+
+  const a = estado.actual;
+  $('ahora').classList.toggle('oculto', !a);
+  if (a) $('ahoraTxt').textContent = `Ahora: ${a.nombre} — ${a.titulo}  ·  ${pendientes.length} en espera`;
+}
+
+cargarCanciones();
+K.escuchar((s) => { estado = s; pintarEstado(); });
+</script>
+</body>
+</html>

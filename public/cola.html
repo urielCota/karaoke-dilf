@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Karaoke – Control de turnos</title>
+<link rel="stylesheet" href="/static/estilos.css">
+</head>
+<body>
+<div class="control">
+  <header>
+    <div class="titulo-marca"><div class="marca chica"><span class="live"><span class="punto-live"></span>LIVE</span><img src="/static/logo.jpg" alt="DILF – Rock en tu idioma"></div><h1>Control de turnos</h1></div>
+    <div class="der">
+      <button id="btnPin" class="sec">🔒 Ingresar PIN</button>
+      <button id="btnSalir" class="sec solo-admin">Bloquear</button>
+    </div>
+  </header>
+
+  <div class="rejilla">
+    <main>
+      <section class="tarjeta ahora">
+        <p class="etq">Ahora</p>
+        <div class="quien" id="aQuien">Nadie está cantando</div>
+        <div class="sub" id="aCancion">Presiona ▶ en un turno para comenzar (cuenta regresiva de 10 s).</div>
+        <div class="progreso"><div id="aBarra"></div></div>
+        <div class="fila-bot">
+          <span id="aTiempo" class="sub"></span>
+          <button id="btnDetener" class="sec solo-admin">⏹ Detener</button>
+          <button id="btnSiguiente" class="solo-admin">⏭ Siguiente turno</button>
+          <label class="interruptor solo-admin"><input type="checkbox" id="auto"> Pasar al siguiente automáticamente</label>
+        </div>
+      </section>
+
+      <div class="cabeza-lista">
+        <h2 id="titLista">Turnos</h2>
+        <div class="botones" style="margin:0">
+          <button id="btnTerminados" class="sec">Mostrar terminados</button>
+          <button id="btnLimpiar" class="sec solo-admin">Limpiar terminados</button>
+        </div>
+      </div>
+      <ul id="lista" class="turnos"></ul>
+    </main>
+
+    <aside class="lateral">
+      <section class="tarjeta enlaces">
+        <p class="etq">Pantallas</p>
+        <a href="/pantalla" target="_blank" rel="noopener">🖥️ Abrir pantalla de karaoke</a>
+        <a href="/" target="_blank" rel="noopener">📱 Página de invitados</a>
+        <p class="sub" style="margin:0;font-size:.85rem">Abre la pantalla en cuantas TVs o proyectores quieras; todas se sincronizan. Elige “Con audio” solo en la que tenga bocinas.</p>      </section>
+    </aside>
+  </div>
+</div>
+
+<dialog id="dlgPin">
+  <form id="frmPin">
+    <p class="etq">Acceso de control</p>
+    <h2>Ingresa el PIN</h2>
+    <label>PIN<input id="pin" type="password" inputmode="numeric" autocomplete="off" required></label>
+    <p id="pinError" class="error"></p>
+    <div class="botones">
+      <button type="button" class="sec" onclick="document.getElementById('dlgPin').close()">Cancelar</button>
+      <button type="submit">Entrar</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="/static/comun.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const { h } = K;
+let pin = K.leer('karaoke_pin', '');
+let estado = null, verTerminados = false;
+
+function actualizarPin() {
+  document.body.classList.toggle('conpin', !!pin);
+  $('btnPin').classList.toggle('oculto', !!pin);
+}
+
+function pedirPin() {
+  $('pin').value = '';
+  $('pinError').textContent = '';
+  $('dlgPin').showModal();
+}
+
+$('frmPin').onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    await K.api('/api/admin/verificar', {}, $('pin').value);
+    pin = $('pin').value;
+    K.escribir('karaoke_pin', pin);
+    $('dlgPin').close();
+    actualizarPin();
+  } catch (err) {
+    $('pinError').textContent = err.status === 401 ? 'PIN incorrecto' : err.message;
+  }
+};
+$('btnPin').onclick = pedirPin;
+$('btnSalir').onclick = () => { pin = ''; K.escribir('karaoke_pin', ''); actualizarPin(); };
+
+async function admin(accion, datos) {
+  if (!pin) return pedirPin();
+  try {
+    await K.api('/api/admin/' + accion, datos, pin);
+  } catch (err) {
+    if (err.status === 401) { pin = ''; actualizarPin(); pedirPin(); }
+    else alert(err.message);
+  }
+}
+
+$('btnDetener').onclick = () => admin('detener');
+$('btnSiguiente').onclick = () => admin('siguiente');
+$('auto').onchange = (e) => admin('auto', { valor: e.target.checked });
+$('btnLimpiar').onclick = () => confirm('¿Quitar de la lista todos los turnos terminados?') && admin('limpiar');
+$('btnTerminados').onclick = () => {
+  verTerminados = !verTerminados;
+  $('btnTerminados').textContent = verTerminados ? 'Ocultar terminados' : 'Mostrar terminados';
+  pintar();
+};
+
+const boton = (txt, titulo, fn, clase) => h('button', { title: titulo, 'aria-label': titulo, class: clase || '', onclick: fn }, txt);
+
+function fila(e, i) {
+  const acc = [];
+  if (e.estado === 'pendiente') {
+    acc.push(boton('▶', 'Reproducir ahora', () => admin('reproducir', { id: e.id }), 'play'),
+             boton('↑', 'Subir', () => admin('mover', { id: e.id, dir: -1 })),
+             boton('↓', 'Bajar', () => admin('mover', { id: e.id, dir: 1 })));
+  } else if (e.estado === 'terminado') {
+    acc.push(boton('↺', 'Regresar a la cola', () => admin('reencolar', { id: e.id })));
+  }
+  acc.push(boton('✕', 'Quitar', () => confirm(`¿Quitar el turno de ${e.nombre}?`) && admin('eliminar', { id: e.id }), 'peligro'));
+  const etiqueta = { pendiente: 'En espera', cantando: 'Cantando', terminado: 'Terminado' }[e.estado];
+  return h('li', { class: 'fila ' + e.estado },
+    h('span', { class: 'num' }, e.estado === 'pendiente' ? i + 1 : e.estado === 'cantando' ? '🎤' : '✓'),
+    h('div', { class: 'quien' }, h('strong', {}, e.nombre), h('span', { class: 'sub' }, e.titulo + (e.artista ? ' — ' + e.artista : ''))),
+    h('span', { class: 'badge ' + e.estado }, etiqueta),
+    h('div', { class: 'acciones' }, acc));
+}
+
+function pintar() {
+  const pendientes = estado.cola.filter((e) => e.estado === 'pendiente');
+  const cantando = estado.cola.filter((e) => e.estado === 'cantando');
+  const terminados = estado.cola.filter((e) => e.estado === 'terminado');
+  const visibles = [...cantando, ...pendientes, ...(verTerminados ? terminados : [])];
+  $('titLista').textContent = `Turnos · ${pendientes.length} en espera`;
+  $('lista').replaceChildren(...(visibles.length ? visibles.map((e) => fila(e, pendientes.indexOf(e)))
+    : [h('li', { class: 'vacio tarjeta' }, 'Todavía no hay nadie anotado. El QR está en la pantalla de karaoke.')]));
+  $('auto').checked = estado.auto;
+}
+
+function pintarAhora() {
+  const a = estado && estado.actual;
+  if (!a) {
+    $('aQuien').textContent = 'Nadie está cantando';
+    $('aCancion').textContent = 'Presiona ▶ en un turno para comenzar (cuenta regresiva de 10 s).';
+    $('aTiempo').textContent = '';
+    $('aBarra').style.width = '0';
+    return;
+  }
+  const t = (K.ahora() - a.inicio) / 1000;
+  const total = (a.fin - a.inicio) / 1000;
+  $('aQuien').textContent = '🎤 ' + a.nombre;
+  $('aCancion').textContent = a.titulo + (a.artista ? ' — ' + a.artista : '');
+  $('aTiempo').textContent = t < 0 ? `Comienza en ${Math.ceil(-t)} s` : `${K.fmt(t)} / ${K.fmt(total)}`;
+  $('aBarra').style.width = t < 0 ? '0' : Math.min(100, (t / total) * 100) + '%';
+}
+
+actualizarPin();
+K.escuchar((s) => { estado = s; pintar(); pintarAhora(); });
+setInterval(pintarAhora, 250);
+</script>
+</body>
+</html>

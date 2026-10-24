@@ -1,0 +1,13 @@
+# Configuración para publicar en Render (plan gratuito): https://render.com
+services:
+  - type: web
+    name: karaoke-dilf
+    runtime: python
+    plan: free
+    buildCommand: "true"
+    startCommand: python -u server.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      - key: KARAOKE_PIN
+        sync: false  # Render lo pide al crear el sitio; no uses 1234 en internet
